@@ -1,7 +1,8 @@
 # startpos_checker
 
-Checks a **Total War: WARHAMMER III** start_pos pack (the `db/start_pos_*_tables`
-fragments you build a `startpos.esf` from) for errors before you build it.
+Checks a **Total War: WARHAMMER III** or **Total War: THREE KINGDOMS** start_pos
+pack (the `db/start_pos_*_tables` fragments you build a `startpos.esf` from) for
+errors before you build it.
 
 The game gives almost no feedback here. A bad start_pos either crashes the
 build with no log, or builds a campaign that is subtly broken. This tool
@@ -9,24 +10,25 @@ catches the mistakes it knows about in about a minute: IDs that point at
 nothing, buildings a faction can't have, settlements missing a
 `settlement_type`, factions without a faction leader, and so on.
 
-**Warhammer III only.** The checks are written against WH3's tables and map
-format, and their severities were tuned on CA's own WH3 start_pos. The
-approach would carry over to other Total War games that build a start_pos
-from DB tables, but the checks would have to be rewritten and re-calibrated
-for each one (see [Other Total War games](#other-total-war-games)).
+**Warhammer III and Three Kingdoms.** Each game has its own checks, written
+against its tables and map format, with severities tuned on CA's own
+start_pos for that game. Pick the game with `--game wh3` (the default) or
+`--game 3k`, or `game = 3k` in `settings.ini`. See [Three Kingdoms](#three-kingdoms)
+for what differs.
 
 ## What you need
 
-- **Windows** and **Warhammer III**.
+- **Windows** and **Warhammer III** or **Three Kingdoms**.
 - **[RPFM 5](https://github.com/Frodo45127/rpfm/releases)**. The checker uses
   `rpfm_server.exe`, which ships next to `rpfm_ui.exe`. Before the first run,
   open `rpfm_ui.exe` and:
-  1. In **PackFile > Settings**, set the Warhammer 3 **Game Folder** (the
-     folder with `Warhammer3.exe` in it). Setting the **Assembly Kit Folder**
-     too is recommended.
-  2. Select **Game Selected > Warhammer 3**, then **Game Selected > Generate
-     Dependencies Cache**, and wait for it to finish. Do this again after
-     game updates, when RPFM asks for it.
+  1. In **PackFile > Settings**, set the game's **Game Folder** (the folder
+     with `Warhammer3.exe` / `Three_Kingdoms.exe` in it). Setting the
+     **Assembly Kit Folder** too is recommended; for Three Kingdoms it is
+     required, because the game ships none of its start_pos tables.
+  2. Select **Game Selected > Warhammer 3** (or **Three Kingdoms**), then
+     **Game Selected > Generate Dependencies Cache**, and wait for it to
+     finish. Do this again after game updates, when RPFM asks for it.
 - **[Python 3.10 or newer](https://www.python.org/downloads/)**. The
   installer's defaults are fine.
 
@@ -41,8 +43,10 @@ for each one (see [Other Total War games](#other-total-war-games)).
    ```
    (If you skip this, the first run creates `settings.ini` for you and tells
    you to fill it in.)
-3. **Drag your start_pos `.pack` onto `check_startpos.bat`.** The first run
-   installs the Python package it needs (`requirements.txt`).
+3. **Drag your start_pos `.pack` onto `check_startpos.bat`** (Warhammer III,
+   or the `game` in `settings.ini`) **or `check_startpos_3k.bat`** (Three
+   Kingdoms). The first run installs the Python package it needs
+   (`requirements.txt`).
 4. Wait about a minute. The report shows in the window and is saved next to
    the `.bat` as `<pack name>_report.txt`. Post that file if you ask for help.
 
@@ -71,20 +75,36 @@ which is what you look for in RPFM.
 
 - **"Set rpfm_server in ...settings.ini"** or **"rpfm_server.exe not found
   at ..."**: see step 2 above.
-- **"RPFM does not know where Warhammer III is installed"** or **"no
-  dependencies cache"**: do the RPFM steps under [What you need](#what-you-need).
+- **"RPFM does not know where Warhammer III (Three Kingdoms) is installed"** or
+  **"no dependencies cache"**: do the RPFM steps under [What you need](#what-you-need)
+  for that game.
 - **"Python 3 is not installed"** although it is: reinstall from python.org.
   The `python` command that comes with Windows only opens the Microsoft Store.
 - **"dependency ... is not installed"**: the pack lists another mod pack as a
   dependency, and that pack isn't in the game's data folder or subscribed to
   on the Workshop.
 
-## Other Total War games
+## Adding another Total War game
 
-Everything here is WH3-specific: the start_pos tables and columns, the game
-tables the checks cross-reference (`building_culture_variants`,
+The loading, merging, report and most start_pos checks are shared; what is
+game-specific is the start_pos columns, the game tables the checks
+cross-reference (`building_culture_variants`,
 `campaign_group_settlement_type_sets`, ...) and the `map_data.esf` layout.
-What carries over to other games is the method:
+To add a game:
+
+1. Add a `Game` to `games.py`: RPFM's game key, the executable, the RPFM
+   dependencies cache prefix, the calibration campaign and map, and which
+   checker class to use.
+2. Write a checker class. Subclass `GameChecker` (`game_checks.py`) and
+   override what differs. `Checker` and `GameChecker` keep the column names and
+   severities that vary between games in class attributes (`TYPE`,
+   `MAX_ARMY_UNITS`, `FACTION_KEY_TABLES`, `SETTLEMENT_REGION_SEV`, ...) and
+   hooks (`subtype_of`, `is_off_map`, `is_parked`, `text_id_table`,
+   `_permitted_chains`). `checks_3k.py` is the worked example.
+3. Calibrate: `python calibrate.py <pack> --game <flag>` on every vanilla
+   campaign, and make any rule CA's data breaks a warning or info.
+
+The method behind the checks carries over unchanged:
 
 - merge DB fragments the way the game does (load order, file-name order,
   first row for a key wins) before checking anything;
@@ -97,6 +117,7 @@ What carries over to other games is the method:
 
 ```
 python startpos_check.py "<path to>\my_start_pos.pack"
+python startpos_check.py <pack> --game 3k       # a Three Kingdoms pack (default: wh3)
 python startpos_check.py <pack> -v              # also list info findings
 python startpos_check.py <pack> --json out.json # every finding as JSON
 python startpos_check.py <pack> --txt out.txt   # also save the report as text
@@ -105,6 +126,7 @@ python startpos_check.py <pack> --no-rpfm-diagnostics   # skip RPFM's own checks
 python startpos_check.py <pack> --no-map                # skip map_data.esf (saves ~10 s per map)
 python startpos_check.py <pack> --rpfm <rpfm_server.exe>  # instead of settings.ini
 python calibrate.py <any mod .pack> [-v]                # run all checks on CA's own combi data
+python calibrate.py <any 3K .pack> --game 3k [--campaign 8p_start_pos] [-v]
 ```
 
 A run takes 40 to 60 s: the dependency rebuild takes about 25 s and reading the
@@ -164,7 +186,7 @@ if it isn't already running.
 | `faction-limit` | error | more than 1024 `start_pos_factions` rows in one campaign |
 | `region-settlement` | error | region with no settlement, or several |
 | `army` / `army-size` | error/warning | units on a non-general or a pool general, more than 19 units, soldiers ≤ 0 |
-| `garrison-owner` | warning | character placed in a settlement its faction doesn't own |
+| `garrison-owner` | warning (WH3) / error (3K) | character placed in a settlement its faction doesn't own. In 3K the start_pos fails to generate |
 | `horde`, `general-option` | error/warning | horde details / frontend options on non-generals; one frontend leader used by several factions |
 | `character-position` | warning | generals of different factions on the same spot |
 | `region-absent`, `faction-absent` | warning/info | rows naming a region/faction that isn't in the campaign |
@@ -191,6 +213,47 @@ The `building-*` checks are errors only for `primary_building` (settlement or ho
 problem with a port, secondary or horde secondary building is a warning, because the
 start_pos still builds.
 
+## Three Kingdoms
+
+`--game 3k` runs the checks above that apply to 3K, with these differences:
+
+- Characters have no `subtype` / `Name` / `Surname`; their subtype comes from
+  `template` (`character_generation_templates.subtype`). `name-group` is not
+  run, and unknown templates are left to RPFM's diagnostics. A character with
+  `start_on_map` off counts as off the map, and (1, 1) is a parking spot like
+  (0, 0): CA parks 246 on-map characters there.
+- Slot templates permit chains through
+  `slot_template_to_building_superchain_junctions`. 3K has no settlement types,
+  climate restrictions or required buildings, so those checks don't run.
+- `start_pos_technologies.faction` is a start_pos faction ID, not a faction key.
+- A general's land units (`start_pos_land_units`, which vanilla leaves empty) are one retinue: at most 6.
+- `garrison-owner` is an error: a character in a settlement his faction doesn't
+  own makes the 3K start_pos fail to generate (CA's 3K data never does it).
+- Severities that CA's 3K data needed lowered: a settlement, religion or
+  pooled resource whose region doesn't exist, and a technology whose faction
+  doesn't exist, are warnings (CA's AK has 1022 settlements and 90
+  technologies left over from deleted regions and factions); an unowned
+  `faction_capital` region is a warning (2 in CA's `8p_start_pos`).
+
+Checks only 3K has:
+
+| check | severity | what |
+|---|---|---|
+| `diplomacy-deal` | error | a `start_pos_diplomacy_deals` row with no `start_pos_diplomacy_simple_deals` (or `_complex_deals`) row of the same id, or a simple deal with no `diplomacy_deals` row. **The AK's `start_pos_diplomacy_deals` has 35 deals (CA's hidden treaties) with no simple deal; copied into a pack they make the start_pos build fail.** Copy only the deals your simple deals use. Info: the number of such deals |
+| `dangling-id` | error | deal orderings and simple-deal parameters naming a deal that doesn't exist; proposers, recipients and faction parameters naming no start_pos faction |
+| `campaign-mismatch` | error | a deal, deal parameter, force, family / relationship link, employment history entry, technology or world power token joining rows of different campaigns |
+| `diplomacy` | info | a deal proposed to the proposer itself (CA's automatic treaties do this) |
+| `force` | error / warning | in `start_pos_non_commanding_generals`: a commander that isn't an on-map general, a non-commanding general that isn't a general, serves another faction or commands a force itself, or more than 2 per force; captains / captain retinue modifiers on a non-general. Warning: captain retinue modifiers on a general with no captains |
+| `character-link` | warning | a family relationship or relationship trigger from a character to itself |
+| `region-religion` | warning | a region's religions adding up to more than 100% |
+| `decode` | info | an empty fragment of a table version RPFM has no definition for (3K packs carry many of the AK's empty start_pos tables) |
+
+The 3K baseline is the Assembly Kit's start_pos (3K ships none in its packs).
+RPFM decodes the AK's start_pos IDs as integers and pack fragments as
+strings; `calibrate.py` converts the AK's to strings so its ID links resolve.
+On every vanilla campaign, the only errors left are the 35 `diplomacy-deal`
+rows above and 9 AK characters whose faction no longer exists.
+
 ## Calibration
 
 Severities were set by running every check on CA's `wh3_main_combi` start_pos
@@ -208,11 +271,14 @@ than secondary slot templates", and "abandoned settlements only hold
 ## Files
 
 - `check_startpos.bat`: drag-and-drop wrapper; finds Python and installs `requirements.txt`
-- `settings.example.ini`: template for `settings.ini` (path to `rpfm_server.exe`)
+- `check_startpos_3k.bat`: the same for Three Kingdoms packs
+- `settings.example.ini`: template for `settings.ini` (path to `rpfm_server.exe`, game)
+- `games.py`: the supported games (RPFM game key, executable, calibration defaults, checker)
 - `startpos_check.py`: command line and report
 - `paths.py`: reads `settings.ini`; checks RPFM's own setup
 - `rpfm_client.py`: RPFM server WebSocket client (launches the server)
 - `loader.py`: pack tables, merged game tables, CA's baseline, `map_data.esf`
 - `checks.py`: start_pos-internal checks
-- `game_checks.py`: checks against game tables and the map
-- `calibrate.py`: runs everything on CA's combi start_pos with vanilla tables only
+- `game_checks.py`: checks against game tables and the map (Warhammer III)
+- `checks_3k.py`: Three Kingdoms checks, built on the WH3 ones
+- `calibrate.py`: runs everything on CA's own start_pos with vanilla tables only

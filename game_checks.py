@@ -44,11 +44,11 @@ class GameChecker(Checker):
         self.faction_db = fdb.lookup("key")
         self.subculture_culture = {r["subculture"]: r["culture"] for r in db.table("cultures_subcultures").rows}
         self.permitted_agents = {(r["faction"], r["agent"], r["subtype"])
-                                 for r in db.table("faction_agent_permitted_subtypes").rows if not r["mod_disabled"]}
+                                 for r in db.table("faction_agent_permitted_subtypes").rows if not r.get("mod_disabled")}
 
     def is_placeholder(self, c, fk):
         """A character whose subtype the faction can't have (e.g. a stand-in lord)."""
-        return (fk, c["Type"], c["subtype"]) not in self.permitted_agents
+        return (fk, c[self.TYPE], self.subtype_of(c)) not in self.permitted_agents
 
     def run(self):
         super().run()
@@ -90,7 +90,7 @@ class GameChecker(Checker):
         for c, _ in self.campaign_chars():
             if self.faction_by_id[c["faction"]]["campaign"] != camp:
                 continue
-            if c["is_in_generals_pool"] or c["ID"] in self.garrisoned:
+            if self.is_off_map(c) or c["ID"] in self.garrisoned:
                 continue
             x, y = c["startx"], c["starty"]
             if not m.contains(x, y):
@@ -151,7 +151,7 @@ class GameChecker(Checker):
 
         def permitted(template):
             if template not in memo_tmpl:
-                memo_tmpl[template] = expand(tmpl_rows.get(template, []))
+                memo_tmpl[template] = self._permitted_chains(template, tmpl_rows, by_super, expand)
             return memo_tmpl[template]
 
         climate_rules = defaultdict(lambda: ([], []))   # chain -> (allowed climates, forbidden climates)
@@ -169,6 +169,10 @@ class GameChecker(Checker):
             required=db.table("building_level_required_buildings").index("building_level"),
         )
         return self._bt
+
+    def _permitted_chains(self, template, tmpl_rows, by_super, expand):
+        """The building chains slot template `template` permits."""
+        return expand(tmpl_rows.get(template, []))
 
     def _ownership_problems(self, level_key, chain, cu, campaign):
         """Why faction `cu` = (faction, subculture, culture) can't have this building in `campaign`, if it can't."""
@@ -229,7 +233,7 @@ class GameChecker(Checker):
                     if why:
                         self.add(sev, "building-owner", "start_pos_settlements", s.where(),
                                  f"{region} {col}={b} {why}")
-                st = s["settlement_type"]
+                st = s.get("settlement_type")
                 why = self._type_forbids(st, chain) if st else None
                 if why:
                     self.add(sev, "building-settlement-type", "start_pos_settlements", s.where(),
@@ -386,7 +390,7 @@ class GameChecker(Checker):
                 unknown[fk] += 1
                 continue
             if self.is_placeholder(c, fk):
-                not_permitted[(c["Type"], c["subtype"])].append((fk, c))
+                not_permitted[(c[self.TYPE], self.subtype_of(c))].append((fk, c))
                 continue   # a placeholder lord's army isn't the faction's real roster; don't check it
             for u in units_of.get(c["ID"], []):
                 if u["unit_type"] not in groups[f["military_group"]]:
@@ -396,8 +400,8 @@ class GameChecker(Checker):
         caps = {r["key"]: r["cap"] for r in self.db.table("agent_subtypes").rows if r.get("cap")}
         used = defaultdict(list)
         for c, fk in self.campaign_chars():
-            if c["subtype"] in caps:
-                used[(fk, c["subtype"])].append(c)
+            if self.subtype_of(c) in caps:
+                used[(fk, self.subtype_of(c))].append(c)
         for (fk, sub), cs in sorted(used.items()):
             if caps[sub] > 0 and len(cs) > caps[sub]:
                 self.add(WARN, "agent-cap", "start_pos_characters", cs[caps[sub]].where(),
@@ -459,7 +463,8 @@ class GameChecker(Checker):
                 continue
             fk, cs = f["faction"], chars.get(f["ID"], [])
             cu = self.culture_of(fk)
-            if cu and not any(_match(r, *cu, cols=("faction_key", "subculture_key", "culture_key")) for r in defs):
+            if cu and not any(_match(r, *cu, cols=("faction_key", "subculture_key", "culture_key"))
+                              and r.get("campaign_key") in (None, "", f["campaign"]) for r in defs):
                 # CA's combi has one, wh3_dlc27_wef_wood_elves_dm, which starts with no characters.
                 self.add(ERROR if cs else WARN, "faction-leader-position", "start_pos_factions", f.where(),
                          f"{fk} ({cu[1]} / {cu[2]}) has no {FACTION_LEADER} row in "

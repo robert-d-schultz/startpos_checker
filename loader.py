@@ -207,8 +207,23 @@ class ReferenceData(PackData):
         for folder, (src, path) in sources.items():
             t = Table(folder[:-len("_tables")])
             self._decode_into(t, path, src, ("AK " if src == "AssKitFiles" else "game ") + path.rsplit("/", 1)[1])
+            if src == "AssKitFiles":
+                self._stringify_ids(t)
             self.tables[t.name] = self._finalize(t)
         return self
+
+    @staticmethod
+    def _stringify_ids(t):
+        """The AK defines start_pos IDs as integers; packs (and the game's copies) carry them
+        as strings. Make the AK's strings too, or no ID link between the tables resolves."""
+        cols = [f["name"] for f in t.fields
+                if f["name"].lower() == "id"
+                or (f["is_reference"] and f["is_reference"][0].startswith("start_pos_")
+                    and f["is_reference"][1].lower() == "id")]
+        for r in t.all_rows:
+            for c in cols:
+                if isinstance(r.values.get(c), int) and not isinstance(r.values[c], bool):
+                    r.values[c] = str(r.values[c])
 
 
 @dataclass

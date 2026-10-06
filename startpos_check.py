@@ -1,10 +1,11 @@
-"""Check a Total War: WARHAMMER III start_pos pack for errors.
+"""Check a Total War start_pos pack (WARHAMMER III or THREE KINGDOMS) for errors.
 
-    python startpos_check.py <pack> [--campaign KEY] [--verbose] [--json FILE] [--txt FILE]
+    python startpos_check.py <pack> [--game wh3|3k] [--campaign KEY] [--verbose] [--json FILE] [--txt FILE]
 
 Uses the RPFM server (started on demand) to open the pack and its
 dependencies, runs RPFM's own diagnostics on it, then the start_pos
-consistency checks in checks.py.
+consistency checks in checks.py and the game's own checks (game_checks.py
+for WH3, checks_3k.py for Three Kingdoms).
 """
 import argparse
 import json
@@ -16,20 +17,19 @@ from collections import Counter, defaultdict
 from dataclasses import asdict
 
 from checks import ERROR, INFO, WARN, Finding
-from game_checks import GameChecker
 from loader import GameDB, MapData, PackData
-from paths import SettingsError, rpfm_server, rpfm_setup_problems
+from paths import SettingsError, game, rpfm_server, rpfm_setup_problems
 from rpfm_client import Rpfm, RpfmError
 
-GAME = "warhammer_3"
+DB_FOLDERS = ("db", "ceo_db")   # 3K keeps its CEO tables in ceo_db/
 
 
 def rpfm_diagnostics(rpfm, pack, data, deps):
     """RPFM's diagnostics for the target pack, as Findings."""
     res = rpfm.call({"DiagnosticsCheck": [[], True]})["Diagnostics"]["results"]
     game_tables = {p["path"].split("/")[1] for src in ("vanilla_packed_files", "parent_packed_files")
-                   for p in deps.get(src, []) if p["path"].startswith("db/")}
-    game_tables |= {f.split("/")[1] for f in data.files if f.startswith("db/")}
+                   for p in deps.get(src, []) if p["path"].split("/")[0] in DB_FOLDERS}
+    game_tables |= {f.split("/")[1] for f in data.files if f.split("/")[0] in DB_FOLDERS}
     out = []
     for entry in res:
         kind, payload = next(iter(entry.items()))
@@ -37,7 +37,7 @@ def rpfm_diagnostics(rpfm, pack, data, deps):
             continue
         path = payload.get("path", "")
         parts = path.split("/")
-        table = parts[1][:-len("_tables")] if len(parts) == 3 and parts[0] == "db" else path
+        table = parts[1][:-len("_tables")] if len(parts) == 3 and parts[0] in DB_FOLDERS else path
         frag = parts[-1]
         for r in payload.get("results", []):
             rt = r.get("report_type")
@@ -54,8 +54,7 @@ def rpfm_diagnostics(rpfm, pack, data, deps):
                 value, col = detail
                 t = data.tables.get(table)
                 ref = t.col(col)["is_reference"] if t and t.col(col) else None
-                target = f"{ref[0]}.{ref[1]}" if ref else "?"
-                msg = f"{col}={value!r} not found in {target}"
+                msg = f"{col}={value!r} not found" + (f" in {ref[0]}.{ref[1]}" if ref else "")
                 sev = ERROR
                 if ref and f"{ref[0]}_tables" not in game_tables:
                     sev = INFO
@@ -69,6 +68,7 @@ def rpfm_diagnostics(rpfm, pack, data, deps):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("pack", help="path to the start_pos .pack")
+    ap.add_argument("--game", help="wh3 or 3k (default: game in settings.ini, else wh3)")
     ap.add_argument("--campaign", action="append", help="campaign key(s) to check (default: what RPFM would build)")
     ap.add_argument("--no-rpfm-diagnostics", action="store_true", help="skip RPFM's own diagnostics")
     ap.add_argument("--no-map", action="store_true",
@@ -83,17 +83,18 @@ def main(argv=None):
     if not os.path.isfile(pack):
         ap.error(f"no such pack: {pack}")
     try:
+        a.game = game(a.game)
         a.rpfm = rpfm_server(a.rpfm)
     except SettingsError as e:
         print(f"ERROR: {e}")
         return 2
-    problems = rpfm_setup_problems()
+    problems = rpfm_setup_problems(a.game)
     for msg in problems:
         print(f"ERROR: {msg}\n")
     if problems:
         return 2
 
-    print(f"Checking {os.path.basename(pack)}; this takes about a minute...\n", flush=True)
+    print(f"Checking {os.path.basename(pack)} ({a.game.name}); this takes about a minute...\n", flush=True)
     t0 = time.time()
     try:
         campaigns, data, findings = run(pack, a)
@@ -108,27 +109,30 @@ def main(argv=None):
             fh.write("\n".join(lines) + "\n")
     if a.json:
         with open(a.json, "w", encoding="utf-8") as fh:
-            json.dump({"pack": pack, "campaigns": campaigns, "findings": [asdict(f) for f in findings]},
-                      fh, indent=1)
+            json.dump({"pack": pack, "game": a.game.key, "campaigns": campaigns,
+                       "findings": [asdict(f) for f in findings]}, fh, indent=1)
     return 1 if any(f.severity == ERROR for f in findings) else 0
 
 
 def run(pack, a):
     findings = []
     with Rpfm(a.rpfm) as rpfm:
-        rpfm.call({"SetGameSelected": [GAME, False]})
+        rpfm.call({"SetGameSelected": [a.game.key, False]})
         rpfm.call({"OpenPackFiles": [pack]})
         missing = [name for ok, name in rpfm.call({"GetDependencyPackFilesList": pack})["VecBoolString"] if not ok]
         for name in missing:
             findings.append(Finding(ERROR, "pack-dependency", "-", "-", f"dependency {name} is not installed"))
         data = PackData(rpfm, pack).load()
         for path, err in data.decode_errors:
-            findings.append(Finding(ERROR, "decode", path.split("/")[1] if "/" in path else path, path, err))
+            # RPFM can't open an empty fragment of a table version it has no definition for
+            # (3K packs carry many of the AK's empty start_pos tables); it has no rows to lose.
+            sev = INFO if "the table is empty" in err else ERROR
+            findings.append(Finding(sev, "decode", path.split("/")[1] if "/" in path else path, path, err))
         campaigns = a.campaign or sorted(rpfm.call({"BuildStarposGetCampaingIds": pack})["HashSetString"])
         deps = rpfm.call({"RebuildDependencies": False})["DependenciesInfo"]
         if not deps.get("vanilla_packed_files"):
-            raise RpfmError("RPFM loaded no Warhammer III game files, so there is nothing to check against. "
-                            "In rpfm_ui.exe, select Game Selected > Warhammer 3, then Game Selected > "
+            raise RpfmError(f"RPFM loaded no {a.game.name} game files, so there is nothing to check against. "
+                            f"In rpfm_ui.exe, select Game Selected > {a.game.rpfm_name}, then Game Selected > "
                             "Generate Dependencies Cache, and wait for it to finish.")
         if not deps.get("asskit_tables"):
             findings.append(Finding(WARN, "setup", "-", "-",
@@ -141,7 +145,7 @@ def run(pack, a):
         maps = {} if a.no_map else load_maps(rpfm, pack, data, db, deps, campaigns)
         if not campaigns:
             findings.append(Finding(ERROR, "campaign", "-", "-", "no buildable campaign found in the pack"))
-        findings += GameChecker(data, campaigns, db, maps).run()
+        findings += a.game.checker()(data, campaigns, db, maps).run()
         for path, err in db.decode_errors:
             findings.append(Finding(WARN, "decode", path.split("/")[1] if "/" in path else path, path, err))
     return campaigns, data, findings
