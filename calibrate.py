@@ -47,8 +47,6 @@ def main():
         for f in out:
             if f.severity != "info":
                 print(f"  [{f.severity}] {f.check} {f.table} / {f.where}: {f.message}")
-    print("\nNote: CA's Assembly Kit characters/land-units tables are stale, so dangling-id "
-          "findings here are expected and say nothing about the checks.")
 
 
 if __name__ == "__main__":

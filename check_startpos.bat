@@ -25,7 +25,8 @@ goto :end
 :have_packages
 set "PACK=%~1"
 if not "%PACK%"=="" goto :have_pack
-echo Drag your start_pos .pack file onto check_startpos.bat.
+if "%STARTPOS_BAT%"=="" set "STARTPOS_BAT=%~nx0"
+echo Drag your start_pos .pack file onto %STARTPOS_BAT%.
 goto :end
 
 :have_pack

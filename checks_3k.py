@@ -23,9 +23,6 @@ class ThreeKingdomsChecker(GameChecker):
     TYPE = "type"
     MAX_ARMY_UNITS = MAX_RETINUE_UNITS
     FACTION_KEY_TABLES = ()    # 3K's start_pos_technologies.faction is a start_pos faction ID
-    # CA's AK start_pos has 1022 settlements (and their religion / pooled resource rows) and 90
-    # technologies left over from regions and factions it deleted, and still builds.
-    SETTLEMENT_REGION_SEV = WARN
     UNOWNED_CAPITAL_SEV = WARN  # CA's 8p_start_pos has 2
     GARRISON_OWNER_SEV = ERROR  # 3K's start_pos fails to generate (CA's data never does it)
 
@@ -255,6 +252,7 @@ class ThreeKingdomsChecker(GameChecker):
         overridden = self._overridden(self.factions, "ID", self.faction_by_id)
         for name, col in (("start_pos_technologies", "faction"),
                           ("start_pos_world_power_tokens", "start_pos_faction")):
+            # CA's AK start_pos has 90 technologies left over from factions it deleted, and still builds.
             for r in self.d.table(name).rows:
                 fs = {col: self.resolve(name, r, col, self.faction_by_id, "start_pos_factions", overridden,
                                         WARN if name == "start_pos_technologies" else ERROR)}

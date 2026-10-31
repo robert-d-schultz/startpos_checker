@@ -28,7 +28,10 @@ class Checker:
     # What differs between games in the start_pos tables these checks read.
     TYPE = "Type"                    # start_pos_characters agent type column
     MAX_ARMY_UNITS = MAX_ARMY_UNITS
-    SETTLEMENT_REGION_SEV = ERROR    # start_pos_settlements.region that resolves to nothing
+    # start_pos_settlements.region that resolves to nothing. CA's data has these and still
+    # builds: WH3's AK has 1 settlement left over from a deleted region, 3K's AK 1022 (and
+    # their religion / pooled resource rows).
+    SETTLEMENT_REGION_SEV = WARN
     UNOWNED_CAPITAL_SEV = ERROR      # faction_capital region without an owner
     # Character placed in a settlement its faction doesn't own. CA's WH3 combi has one
     # (Lazarghs at Mount Thug) and builds, so a warning there.

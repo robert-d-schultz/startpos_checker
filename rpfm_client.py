@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 import time
+import urllib.request
 
 try:
     import websocket
@@ -28,6 +29,7 @@ class Rpfm:
         """`exe` is rpfm_server.exe, started if no server is running yet."""
         self.ws = None
         started = False
+        _wait_for_shutdown(url)
         for _ in range(120):
             try:
                 self.ws = websocket.create_connection(url, timeout=timeout)
@@ -89,6 +91,25 @@ class Rpfm:
 
     def __exit__(self, *exc):
         self.close()
+
+
+def _wait_for_shutdown(url, limit=10):
+    """A server whose last session just disconnected accepts connections for about a
+    second while it exits, then drops them. If it has no sessions, wait for it to go."""
+    base = url.replace("ws://", "http://", 1).rsplit("/ws", 1)[0]
+    try:
+        with urllib.request.urlopen(base + "/sessions", timeout=2) as r:
+            if json.load(r):
+                return
+    except (OSError, ValueError):
+        return   # nothing listening
+    deadline = time.time() + limit
+    while time.time() < deadline:
+        try:
+            urllib.request.urlopen(base + "/version", timeout=2).close()
+        except OSError:
+            return
+        time.sleep(0.25)
 
 
 def source(name, pack_key):
