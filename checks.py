@@ -25,6 +25,18 @@ class Finding:
 
 
 class Checker:
+    # What differs between games in the start_pos tables these checks read.
+    TYPE = "Type"                    # start_pos_characters agent type column
+    MAX_ARMY_UNITS = MAX_ARMY_UNITS
+    SETTLEMENT_REGION_SEV = ERROR    # start_pos_settlements.region that resolves to nothing
+    UNOWNED_CAPITAL_SEV = ERROR      # faction_capital region without an owner
+    # Character placed in a settlement its faction doesn't own. CA's WH3 combi has one
+    # (Lazarghs at Mount Thug) and builds, so a warning there.
+    GARRISON_OWNER_SEV = WARN
+    # Tables that name a faction by its *key* (faction-absent check).
+    FACTION_KEY_TABLES = ("start_pos_technologies", "start_pos_entity_association_faction_regions",
+                          "start_pos_region_foreign_slots")
+
     def __init__(self, data, campaigns):
         self.d = data
         self.campaigns = set(campaigns)
@@ -53,11 +65,26 @@ class Checker:
     def char_campaign_ok(self, char):
         return self.in_campaign(self.faction_by_id.get(char["faction"]))
 
+    def subtype_of(self, c):
+        return c["subtype"]
+
+    def text_id_table(self, name):
+        """Whether start_pos table `name` has a text "id" (a key, not a number)."""
+        return False
+
+    def is_off_map(self, c):
+        """A character that doesn't start on the campaign map."""
+        return c["is_in_generals_pool"]
+
+    def is_parked(self, c):
+        """A position CA uses for characters that aren't really placed on the map."""
+        return c["startx"] == 0 and c["starty"] in (0, 1)
+
     def describe_char(self, c):
         f = self.faction_by_id.get(c["faction"])
-        return f"character {c['ID']} ({c['subtype']}, {f['faction'] if f else 'faction ' + c['faction']})"
+        return f"character {c['ID']} ({self.subtype_of(c)}, {f['faction'] if f else 'faction ' + c['faction']})"
 
-    def resolve(self, table, row, column, target_rows, target_name, overridden_ids=()):
+    def resolve(self, table, row, column, target_rows, target_name, overridden_ids=(), sev=ERROR):
         """Check a start_pos ID reference against effective rows."""
         v = str(row[column])
         if v == "" or v == "0" and target_name == "start_pos_factions":
@@ -65,10 +92,10 @@ class Checker:
         hit = target_rows.get(v)
         if hit is None:
             if v in overridden_ids:
-                self.add(ERROR, "dangling-id", table, row.where(),
+                self.add(sev, "dangling-id", table, row.where(),
                          f"{column}={v} only matches a row of {target_name} that is overridden by another fragment")
             else:
-                self.add(ERROR, "dangling-id", table, row.where(),
+                self.add(sev, "dangling-id", table, row.where(),
                          f"{column}={v} does not exist in {target_name}")
         return hit
 
@@ -101,8 +128,9 @@ class Checker:
             if not name.startswith("start_pos_"):
                 continue
             id_cols = [f["name"] for f in t.fields
-                       if f["name"].lower() == "id"
+                       if (f["name"].lower() == "id" and not self.text_id_table(name))
                        or (f["is_reference"] and f["is_reference"][0].startswith("start_pos_")
+                           and not self.text_id_table(f["is_reference"][0])
                            and f["is_reference"][1].lower() == "id")
                        or (f["is_reference"] and f["is_reference"][0] == "names")]
             for r in t.all_rows:
@@ -177,7 +205,7 @@ class Checker:
                     capitals[r["owning_faction"]].append(r)
         on_map = defaultdict(list)
         for c in self.characters.rows:
-            if not c["is_in_generals_pool"]:
+            if not self.is_off_map(c):
                 on_map[c["faction"]].append(c)
         hordes = {str(r["general"]) for r in self.d.table("start_pos_horde_details").rows}
 
@@ -194,7 +222,7 @@ class Checker:
                 self.add(INFO, "faction-capital", "start_pos_factions", f.where(),
                          f"{fk} owns {len(owned[fid])} region(s) but none is flagged faction_capital")
             chars = on_map.get(fid, [])
-            generals = [c for c in chars if c["Type"] == "general"]
+            generals = [c for c in chars if c[self.TYPE] == "general"]
             if not owned.get(fid) and not generals:
                 self.add(INFO, "faction-dead", "start_pos_factions", f.where(),
                          f"{fk} owns no region and has no general on the map, so it starts dead")
@@ -209,7 +237,7 @@ class Checker:
             owner = r["owning_faction"]
             if owner in ("", "0"):
                 if r["faction_capital"]:
-                    self.add(ERROR, "faction-capital", "start_pos_regions", r.where(),
+                    self.add(self.UNOWNED_CAPITAL_SEV, "faction-capital", "start_pos_regions", r.where(),
                              f"{r['region']} is flagged faction_capital but has no owner")
                 continue
             f = self.faction_by_id.get(owner)
@@ -225,7 +253,7 @@ class Checker:
         per_region = defaultdict(list)
         for s in self.settlements.rows:
             reg = self.resolve("start_pos_settlements", s, "region", self.region_by_id,
-                               "start_pos_regions.id", overridden_region_ids)
+                               "start_pos_regions.id", overridden_region_ids, self.SETTLEMENT_REGION_SEV)
             if reg is None:
                 continue
             per_region[str(s["region"])].append(s)
@@ -260,12 +288,12 @@ class Checker:
                 continue
             if f["campaign"] not in self.campaigns:
                 continue
-            if c["is_in_generals_pool"]:
+            if self.is_off_map(c):
                 continue
-            if c["startx"] == 0 and c["starty"] in (0, 1) and c["ID"] not in garrisoned:
+            if self.is_parked(c) and c["ID"] not in garrisoned:
                 self.add(INFO, "character-position", "start_pos_characters", c.where(),
                          f"{self.describe_char(c)} is on the map at ({c['startx']}, {c['starty']})")
-            if c["Type"] == "general" and c["ID"] not in garrisoned and not (c["startx"] == 0 and c["starty"] in (0, 1)):
+            if c[self.TYPE] == "general" and c["ID"] not in garrisoned and not self.is_parked(c):
                 positions[(f["campaign"], c["startx"], c["starty"])].append(c)
         for (_, *pos), cs in positions.items():
             if len(cs) > 1:
@@ -284,12 +312,12 @@ class Checker:
                              "start_pos_characters", overridden)
             if g is None or not self.char_campaign_ok(g):
                 continue
-            if g["Type"] != "general":
+            if g[self.TYPE] != "general":
                 self.add(ERROR, "army", "start_pos_land_units", units[0].where(),
-                         f"{len(units)} unit(s) belong to {self.describe_char(g)}, which is a {g['Type']}, not a general")
-            if len(units) > MAX_ARMY_UNITS:
-                self.add(ERROR, "army-size", "start_pos_land_units", units[MAX_ARMY_UNITS].where(),
-                         f"{self.describe_char(g)} has {len(units)} units (max {MAX_ARMY_UNITS} plus the general)")
+                         f"{len(units)} unit(s) belong to {self.describe_char(g)}, which is a {g[self.TYPE]}, not a general")
+            if len(units) > self.MAX_ARMY_UNITS:
+                self.add(ERROR, "army-size", "start_pos_land_units", units[self.MAX_ARMY_UNITS].where(),
+                         f"{self.describe_char(g)} has {len(units)} units (max {self.MAX_ARMY_UNITS} plus the general)")
             if g["is_in_generals_pool"]:
                 self.add(WARN, "army", "start_pos_land_units", units[0].where(),
                          f"{self.describe_char(g)} is in the generals pool but has {len(units)} unit(s)")
@@ -319,8 +347,7 @@ class Checker:
             reg = self.region_by_id.get(str(s["region"]))
             if reg and reg["owning_faction"] != c["faction"]:
                 owner = self.faction_by_id.get(reg["owning_faction"])
-                # CA's combi data has one of these (Lazarghs at Mount Thug), so not an error.
-                self.add(WARN, "garrison-owner", "start_pos_character_to_settlements", r.where(),
+                self.add(self.GARRISON_OWNER_SEV, "garrison-owner", "start_pos_character_to_settlements", r.where(),
                          f"{self.describe_char(c)} is placed in {reg['region']}, owned by "
                          f"{owner['faction'] if owner else 'nobody'}")
             if c["is_in_generals_pool"]:
@@ -331,9 +358,9 @@ class Checker:
             c = self.char_by_id.get(str(r["general"]))
             if c is None or not self.char_campaign_ok(c):
                 continue
-            if c["Type"] != "general":
+            if c[self.TYPE] != "general":
                 self.add(ERROR, "horde", "start_pos_horde_details", r.where(),
-                         f"{self.describe_char(c)} has horde details but is a {c['Type']}")
+                         f"{self.describe_char(c)} has horde details but is a {c[self.TYPE]}")
             if not r["primary_building"]:
                 self.add(WARN, "horde", "start_pos_horde_details", r.where(),
                          f"{self.describe_char(c)} horde has no primary_building")
@@ -343,9 +370,9 @@ class Checker:
             c = self.char_by_id.get(str(r["general"]))
             if c is None or not self.char_campaign_ok(c):
                 continue
-            if c["Type"] != "general":
+            if c[self.TYPE] != "general":
                 self.add(ERROR, "general-option", "start_pos_starting_general_options", r.where(),
-                         f"{self.describe_char(c)} is a {c['Type']}, not a general")
+                         f"{self.describe_char(c)} is a {c[self.TYPE]}, not a general")
             leaders[(self.faction_by_id[c["faction"]]["campaign"], r["frontend_faction_leader"])].append((r, c))
         for (camp, leader), rows in leaders.items():
             factions = {c["faction"] for _, c in rows}
@@ -367,8 +394,7 @@ class Checker:
                         f"{col}={r[col]} is {f['faction']} ({f['campaign']})" for col, f in fs.items() if f))
         # Tables keyed by faction *key*: the faction should be present in the campaign.
         present = {f["faction"] for f in self.factions.rows if f["campaign"] in self.campaigns}
-        for name in ("start_pos_technologies", "start_pos_entity_association_faction_regions",
-                     "start_pos_region_foreign_slots"):
+        for name in self.FACTION_KEY_TABLES:
             missing = Counter(r["faction"] for r in self.d.table(name).rows
                               if r["faction"] not in present
                               and (not r.get("campaign") or r["campaign"] in self.campaigns))

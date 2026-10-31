@@ -6,6 +6,8 @@ then vanilla), then every fragment of a table is applied in file-name order
 and the first row for a key wins. That is how "!!!!corrections" fragments
 override "!!!vanilla" ones, and how any mod fragment overrides "data__".
 """
+import base64
+import struct
 from dataclasses import dataclass, field
 
 from paths import rpfm_all_settings
@@ -66,6 +68,7 @@ class _Decoder:
         self.pack = pack["key"]
         self.pack_name = pack["name"]
         self.decode_errors = []   # (path, message)
+        self.empty_undecodable = []   # paths of empty fragments RPFM has no definition for
 
     def _decode_into(self, t, path, source, label):
         file = {"source": file_source(source, self.pack), "path": path}
@@ -73,7 +76,13 @@ class _Decoder:
             info = self.rpfm.call("table.info", {"file": file})
             res = self.rpfm.call("table.rows", {"file": file, "limit": info["row_count"]})
         except RpfmError as e:
-            self.decode_errors.append((path, str(e)))
+            # RPFM can't open a fragment of a table version it has no definition for, even an
+            # empty one (3K packs carry many of the AK's empty start_pos tables). Those have no
+            # rows to lose, so tell them apart from real decode errors by the header's row count.
+            if self._row_count(file) == 0:
+                self.empty_undecodable.append(path)
+            else:
+                self.decode_errors.append((path, str(e)))
             return
         fields = info["columns"]
         names = res["columns"]
@@ -87,6 +96,20 @@ class _Decoder:
         t.fragments.append(label)
         for row in res["rows"]:
             t.all_rows.append(Row(dict(zip(names, row["values"])), label, row["index"]))
+
+    def _row_count(self, file):
+        """The row count in a DB fragment's header, or None if it can't be read."""
+        try:
+            res = self.rpfm.call("file.read", {"file": file, "format": "raw"})
+            data = base64.b64decode(res["contents"]["base64"])
+            i = 0
+            if data[:4] == b"\xfd\xfe\xfc\xff":   # GUID: u16 length, then UTF-16 characters
+                i = 6 + 2 * struct.unpack_from("<H", data, 4)[0]
+            if data[i:i + 4] == b"\xfc\xfd\xfe\xff":   # version
+                i += 8
+            return struct.unpack_from("<I", data, i + 1)[0]   # after the mysterious byte
+        except (RpfmError, KeyError, ValueError, struct.error):
+            return None
 
     @staticmethod
     def _finalize(t):
@@ -201,8 +224,23 @@ class ReferenceData(PackData):
         for folder, (src, path) in sources.items():
             t = Table(folder[:-len("_tables")])
             self._decode_into(t, path, src, ("AK " if src == "assembly_kit" else "game ") + path.rsplit("/", 1)[1])
+            if src == "assembly_kit":
+                self._stringify_ids(t)
             self.tables[t.name] = self._finalize(t)
         return self
+
+    @staticmethod
+    def _stringify_ids(t):
+        """The AK defines start_pos IDs as integers; packs (and the game's copies) carry them
+        as strings. Make the AK's strings too, or no ID link between the tables resolves."""
+        cols = [f["name"] for f in t.fields
+                if f["name"].lower() == "id"
+                or (f["is_reference"] and f["is_reference"][0].startswith("start_pos_")
+                    and f["is_reference"][1].lower() == "id")]
+        for r in t.all_rows:
+            for c in cols:
+                if isinstance(r.values.get(c), int) and not isinstance(r.values[c], bool):
+                    r.values[c] = str(r.values[c])
 
 
 @dataclass

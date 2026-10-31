@@ -1,5 +1,6 @@
 @echo off
-rem Drag a Warhammer III start_pos .pack onto this file to check it.
+rem Drag a start_pos .pack onto this file to check it. The game is settings.ini's
+rem game (wh3 if unset); check_startpos_3k.bat checks a Three Kingdoms pack.
 rem The report is shown here and saved next to this file as <pack name>_report.txt.
 setlocal
 set "HERE=%~dp0"
@@ -30,7 +31,7 @@ goto :end
 :have_pack
 for %%F in ("%PACK%") do set "REPORT=%HERE%%%~nF_report.txt"
 if exist "%REPORT%" del "%REPORT%"
-%PY% "%HERE%startpos_check.py" "%PACK%" --txt "%REPORT%"
+%PY% "%HERE%startpos_check.py" "%PACK%" %STARTPOS_GAME% --txt "%REPORT%"
 if exist "%REPORT%" (
   echo.
   echo Report saved to "%REPORT%"
