@@ -26,12 +26,13 @@ def main():
     a = ap.parse_args()
     a.anchor = os.path.abspath(a.anchor)
     with Rpfm(rpfm_server(a.rpfm)) as rpfm:
-        rpfm.call({"SetGameSelected": ["warhammer_3", False]})
-        rpfm.call({"OpenPackFiles": [a.anchor]})
-        deps = rpfm.call({"RebuildDependencies": False})["DependenciesInfo"]
-        ref = ReferenceData(rpfm, a.anchor, deps).load()
-        db = GameDB(rpfm, a.anchor, [], deps, vanilla_only=True)
-        game_map = MapData.load(rpfm, a.anchor, a.map, deps, [], None)
+        rpfm.job("session.set_game", {"game": "warhammer_3", "rebuild_dependencies": False})
+        anchor = rpfm.call("pack.open", {"paths": [a.anchor]})
+        rpfm.job("dependencies.rebuild")
+        deps = rpfm.call("dependencies.info")
+        ref = ReferenceData(rpfm, anchor, deps).load()
+        db = GameDB(rpfm, anchor, [], deps, vanilla_only=True)
+        game_map = MapData.load(rpfm, anchor["key"], a.map, deps, [], None)
         out = GameChecker(ref, [a.campaign], db, {a.campaign: (game_map, None)}).run()
     counts = Counter((f.severity, f.check) for f in out)
     for (sev, check), n in sorted(counts.items()):

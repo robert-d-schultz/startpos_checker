@@ -40,14 +40,21 @@ def rpfm_server(override=None):
     return path
 
 
-def rpfm_settings():
-    """The string settings of RPFM ({'warhammer_3': <game folder>, ...}), or None
+def rpfm_all_settings():
+    """RPFM's settings.json ({'bool': {...}, 'string': {...}, ...}), or None
     if RPFM has never been run."""
     try:
         with open(os.path.join(RPFM_CONFIG, "settings.json"), encoding="utf-8") as fh:
-            return json.load(fh).get("string", {})
+            return json.load(fh)
     except (OSError, ValueError):
         return None
+
+
+def rpfm_settings():
+    """The string settings of RPFM ({'warhammer_3': <game folder>, ...}), or None
+    if RPFM has never been run."""
+    settings = rpfm_all_settings()
+    return None if settings is None else settings.get("string", {})
 
 
 def rpfm_setup_problems():

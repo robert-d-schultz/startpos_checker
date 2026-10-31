@@ -8,7 +8,8 @@ override "!!!vanilla" ones, and how any mod fragment overrides "data__".
 """
 from dataclasses import dataclass, field
 
-from rpfm_client import RpfmError, cell
+from paths import rpfm_all_settings
+from rpfm_client import RpfmError, source as file_source
 
 
 @dataclass
@@ -59,27 +60,23 @@ class Table:
 
 
 class _Decoder:
-    def __init__(self, rpfm, pack_key):
+    def __init__(self, rpfm, pack):
+        """`pack` is the open pack, as pack.open returns it."""
         self.rpfm = rpfm
-        self.pack = pack_key
+        self.pack = pack["key"]
+        self.pack_name = pack["name"]
         self.decode_errors = []   # (path, message)
-        self._fields = {}
 
     def _decode_into(self, t, path, source, label):
+        file = {"source": file_source(source, self.pack), "path": path}
         try:
-            res = self.rpfm.call({"DecodePackedFile": [self.pack, path, source]})
+            info = self.rpfm.call("table.info", {"file": file})
+            res = self.rpfm.call("table.rows", {"file": file, "limit": info["row_count"]})
         except RpfmError as e:
             self.decode_errors.append((path, str(e)))
             return
-        if "DBRFileInfo" not in res:
-            self.decode_errors.append((path, f"not decoded as DB ({next(iter(res))})"))
-            return
-        db = res["DBRFileInfo"][0]["table"]
-        key = (t.name, db["definition"]["version"], source == "AssKitFiles")
-        if key not in self._fields:
-            self._fields[key] = self.rpfm.call({"FieldsProcessed": db["definition"]})["VecField"]
-        fields = self._fields[key]
-        names = [f["name"] for f in fields]
+        fields = info["columns"]
+        names = res["columns"]
         if not t.fields:
             t.fields = fields
             t.keys = [f["name"] for f in fields if f["is_key"]]
@@ -88,8 +85,8 @@ class _Decoder:
             # columns missing from this fragment just come back as None.
             pass
         t.fragments.append(label)
-        for i, raw in enumerate(db["table_data"]):
-            t.all_rows.append(Row(dict(zip(names, map(cell, raw))), label, i))
+        for row in res["rows"]:
+            t.all_rows.append(Row(dict(zip(names, row["values"])), label, row["index"]))
 
     @staticmethod
     def _finalize(t):
@@ -108,8 +105,8 @@ class _Decoder:
 class PackData(_Decoder):
     """Every DB table in the target pack, merged per table."""
 
-    def __init__(self, rpfm, pack_path):
-        super().__init__(rpfm, pack_path)
+    def __init__(self, rpfm, pack):
+        super().__init__(rpfm, pack)
         self.tables = {}
         self.files = []
 
@@ -117,9 +114,7 @@ class PackData(_Decoder):
         return self.tables.get(name) or Table(name)
 
     def load(self):
-        tv = self.rpfm.call({"GetPackFileDataForTreeView": self.pack})
-        _, infos = tv["ContainerInfoVecRFileInfo"]
-        self.files = sorted(i["path"] for i in infos)
+        self.files = sorted(f["path"] for f in self.rpfm.pages("files.list", {"source": {"pack": self.pack}}, "files"))
         by_table = {}
         for path in self.files:
             parts = path.split("/")
@@ -128,7 +123,7 @@ class PackData(_Decoder):
         for name, paths in sorted(by_table.items()):
             t = Table(name)
             for path in sorted(paths, key=lambda p: p.rsplit("/", 1)[1]):
-                self._decode_into(t, path, "PackFile", path.rsplit("/", 1)[1])
+                self._decode_into(t, path, "pack", path.rsplit("/", 1)[1])
             self.tables[name] = self._finalize(t)
         return self
 
@@ -141,23 +136,22 @@ class GameDB(_Decoder):
     used only for tables that no pack ships.
     """
 
-    def __init__(self, rpfm, pack_path, pack_files, deps, vanilla_only=False):
-        super().__init__(rpfm, pack_path)
+    def __init__(self, rpfm, pack, pack_files, deps, vanilla_only=False):
+        super().__init__(rpfm, pack)
         self.vanilla_only = vanilla_only
         self._cache = {}
         self._index = {}   # table folder -> list of (pack priority, fragment, path, source, label)
-        pack_name = pack_path.replace("\\", "/").rsplit("/", 1)[-1]
-        sources = [("GameFiles", deps.get("vanilla_packed_files", []), 2),
-                   ("AssKitFiles", deps.get("asskit_tables", []), 3)]
+        sources = [("game_files", deps.get("vanilla_packed_files", []), 2),
+                   ("assembly_kit", deps.get("asskit_tables", []), 3)]
         if not vanilla_only:
-            sources.append(("ParentFiles", deps.get("parent_packed_files", []), 1))
-            sources.append(("PackFile", [{"path": p, "container_name": pack_name} for p in pack_files], 1))
+            sources.append(("parent_files", deps.get("parent_packed_files", []), 1))
+            sources.append(("pack", [{"path": p, "container_name": self.pack_name} for p in pack_files], 1))
         for source, infos, prio in sources:
             for info in infos:
                 parts = info["path"].split("/")
                 if len(parts) != 3 or parts[0] != "db":
                     continue
-                pack = info.get("container_name") or ("assembly kit" if source == "AssKitFiles" else "vanilla")
+                pack = info.get("container_name") or ("assembly kit" if source == "assembly_kit" else "vanilla")
                 self._index.setdefault(parts[1], []).append(((prio, pack), parts[2], info["path"], source,
                                                              f"{pack}:{parts[2]}"))
 
@@ -167,7 +161,7 @@ class GameDB(_Decoder):
         if key not in self._cache:
             t = Table(name)
             for e in self._index.get(name + "_tables", []):
-                if e[3] == "AssKitFiles":
+                if e[3] == "assembly_kit":
                     self._decode_into(t, e[2], e[3], e[4])
             self._cache[key] = self._finalize(t)
         return self._cache[key]
@@ -193,20 +187,20 @@ class ReferenceData(PackData):
     ships, the Assembly Kit copies of the rest. A known-good baseline.
     """
 
-    def __init__(self, rpfm, pack_key, deps):
-        super().__init__(rpfm, pack_key)
+    def __init__(self, rpfm, pack, deps):
+        super().__init__(rpfm, pack)
         self.deps = deps
 
     def load(self, prefix="start_pos_"):
         sources = {}
-        for src, key in (("AssKitFiles", "asskit_tables"), ("GameFiles", "vanilla_packed_files")):
+        for src, key in (("assembly_kit", "asskit_tables"), ("game_files", "vanilla_packed_files")):
             for info in self.deps.get(key, []):
                 parts = info["path"].split("/")
                 if len(parts) == 3 and parts[0] == "db" and parts[1].startswith(prefix):
                     sources[parts[1]] = (src, info["path"])
         for folder, (src, path) in sources.items():
             t = Table(folder[:-len("_tables")])
-            self._decode_into(t, path, src, ("AK " if src == "AssKitFiles" else "game ") + path.rsplit("/", 1)[1])
+            self._decode_into(t, path, src, ("AK " if src == "assembly_kit" else "game ") + path.rsplit("/", 1)[1])
             self.tables[t.name] = self._finalize(t)
         return self
 
@@ -236,28 +230,26 @@ class MapData:
     @classmethod
     def load(cls, rpfm, pack_key, display_location, deps, pack_files, pack_paths):
         """Find and decode map_data.esf. RPFM only decodes ESF with its
-        enable_esf_editor setting on, so it is switched on for the call and restored."""
+        enable_esf_editor setting on, so the session is configured with it on
+        (sessions have their own settings; RPFM's settings file is untouched)."""
         path = f"campaign_maps/{display_location}/map_data.esf"
         if path in pack_files:
-            candidates = [(pack_key, "PackFile")]
+            candidates = ["pack"]
         else:
-            candidates = [(pack_key, "ParentFiles")] if any(
+            candidates = ["parent_files"] if any(
                 i["path"] == path for i in deps.get("parent_packed_files", [])) else []
             if any(i["path"] == path for i in deps.get("vanilla_packed_files", [])):
-                candidates.append((pack_key, "GameFiles"))
+                candidates.append("game_files")
         if not candidates:
             return None
-        old = rpfm.call({"SettingsGetBool": "enable_esf_editor"}).get("Bool", False)
-        try:
-            if not old:
-                rpfm.call({"SettingsSetBool": ["enable_esf_editor", True]})
-            res = rpfm.call({"DecodePackedFile": [candidates[0][0], path, candidates[0][1]]})
-        finally:
-            if not old:
-                rpfm.call({"SettingsSetBool": ["enable_esf_editor", False]})
-        if "ESFRFileInfo" not in res:
+        settings = rpfm_all_settings() or {}
+        settings.setdefault("bool", {})["enable_esf_editor"] = True
+        rpfm.call("session.configure", {"settings": settings})
+        res = rpfm.call("file.read", {"file": {"source": file_source(candidates[0], pack_key), "path": path}})
+        data = res["contents"].get("data")
+        if not (isinstance(data, dict) and "ESF" in data):
             raise RpfmError(f"{path} did not decode as ESF")
-        return cls._parse(path, res["ESFRFileInfo"][0]["root_node"])
+        return cls._parse(path, data["ESF"]["root_node"])
 
     @classmethod
     def _parse(cls, path, root):

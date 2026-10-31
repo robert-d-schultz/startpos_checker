@@ -18,8 +18,9 @@ for each one (see [Other Total War games](#other-total-war-games)).
 ## What you need
 
 - **Windows** and **Warhammer III**.
-- **[RPFM 5](https://github.com/Frodo45127/rpfm/releases)**. The checker uses
-  `rpfm_server.exe`, which ships next to `rpfm_ui.exe`. Before the first run,
+- **[RPFM 5.3 or newer](https://github.com/Frodo45127/rpfm/releases)**. The checker uses
+  `rpfm_server.exe`, which ships next to `rpfm_ui.exe`, through its v2
+  (JSON-RPC) API; older RPFM versions won't work. Before the first run,
   open `rpfm_ui.exe` and:
   1. In **PackFile > Settings**, set the Warhammer 3 **Game Folder** (the
      folder with `Warhammer3.exe` in it). Setting the **Assembly Kit Folder**
@@ -116,11 +117,12 @@ if it isn't already running.
 
 ## How it works
 
-1. Opens the pack in the RPFM server. Pack dependencies that aren't installed are errors.
+1. Opens the pack in the RPFM server. Pack dependencies that RPFM couldn't load
+   (not installed) are errors.
 2. Decodes every DB fragment in the pack. Per table, fragments are applied in
    file-name order and **the first row for a key wins**, so `!!!!corrections`
    overrides `!!!vanilla`. All later checks use these effective rows.
-3. Campaigns come from RPFM's `BuildStarposGetCampaingIds` (what "Build
+3. Campaigns come from RPFM's `startpos.campaigns` (what "Build
    Startpos" would build), unless `--campaign` is given. All of them are
    checked; each campaign only against its own rows (rows of campaigns that
    aren't built are ignored, apart from `dangling-id` and the `campaign-scope`
@@ -140,8 +142,8 @@ if it isn't already running.
 6. Reads `campaign_maps/<campaigns.map_name>/map_data.esf` of each campaign
    (or `display_location` if `map_name` has none; they're the same folder in
    vanilla, not in e.g. `cr_darklands`) through RPFM, once per map. RPFM only decodes ESF with its
-   `enable_esf_editor` setting on, so the tool switches it on for those calls
-   and restores it. `HEX_MAP_DATA` there
+   `enable_esf_editor` setting on, so the tool switches it on for its own
+   server session only (your RPFM settings are not changed). `HEX_MAP_DATA` there
    is the hex grid `startx/starty` are measured in (1440×970 for vanilla combi,
    1600×970 for cr_combi_expanded_map_1). `REGION_DATA` lists the map's regions
    (flag 1 = sea).
@@ -211,7 +213,7 @@ than secondary slot templates", and "abandoned settlements only hold
 - `settings.example.ini`: template for `settings.ini` (path to `rpfm_server.exe`)
 - `startpos_check.py`: command line and report
 - `paths.py`: reads `settings.ini`; checks RPFM's own setup
-- `rpfm_client.py`: RPFM server WebSocket client (launches the server)
+- `rpfm_client.py`: RPFM server v2 API (JSON-RPC over WebSocket) client (launches the server)
 - `loader.py`: pack tables, merged game tables, CA's baseline, `map_data.esf`
 - `checks.py`: start_pos-internal checks
 - `game_checks.py`: checks against game tables and the map

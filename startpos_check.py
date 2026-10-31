@@ -26,43 +26,39 @@ GAME = "warhammer_3"
 
 def rpfm_diagnostics(rpfm, pack, data, deps):
     """RPFM's diagnostics for the target pack, as Findings."""
-    res = rpfm.call({"DiagnosticsCheck": [[], True]})["Diagnostics"]["results"]
+    rpfm.job("diagnostics.run", {"check_assembly_kit_only_references": True})
     game_tables = {p["path"].split("/")[1] for src in ("vanilla_packed_files", "parent_packed_files")
                    for p in deps.get(src, []) if p["path"].startswith("db/")}
     game_tables |= {f.split("/")[1] for f in data.files if f.startswith("db/")}
     out = []
-    for entry in res:
-        kind, payload = next(iter(entry.items()))
-        if os.path.normcase(payload.get("pack") or pack) != os.path.normcase(pack):
+    for r in rpfm.pages("diagnostics.list", {}, "results"):
+        if r["pack"] not in (pack, ""):   # "" is RPFM's own configuration
             continue
-        path = payload.get("path", "")
-        parts = path.split("/")
-        table = parts[1][:-len("_tables")] if len(parts) == 3 and parts[0] == "db" else path
+        name = r["report_type"]
+        if name == "DuplicatedCombinedKeys":
+            continue   # reported with more detail by the override check
+        parts = r["path"].split("/")
+        table = parts[1][:-len("_tables")] if len(parts) == 3 and parts[0] == "db" else r["path"]
         frag = parts[-1]
-        for r in payload.get("results", []):
-            rt = r.get("report_type")
-            name = rt if isinstance(rt, str) else next(iter(rt))
-            detail = None if isinstance(rt, str) else rt[name]
-            cells = r.get("cells_affected") or []
-            where = f"{frag} row {cells[0][0] + 1}" if cells else frag
-            cols = r.get("column_names") or []
-            if name == "DuplicatedCombinedKeys":
-                continue   # reported with more detail by the override check
-            sev = WARN
-            msg = f"{name}: {detail}" if detail is not None else name
-            if name == "InvalidReference":
-                value, col = detail
-                t = data.tables.get(table)
-                ref = t.col(col)["is_reference"] if t and t.col(col) else None
-                target = f"{ref[0]}.{ref[1]}" if ref else "?"
-                msg = f"{col}={value!r} not found in {target}"
-                sev = ERROR
-                if ref and f"{ref[0]}_tables" not in game_tables:
-                    sev = INFO
-                    msg += " (Assembly Kit-only table, not read by the game)"
-            elif cols:
-                msg += f" [{', '.join(cols)}]"
-            out.append(Finding(sev, f"rpfm-{kind.lower()}", table, where, msg))
+        rows = sorted({row for row, _ in r.get("cells") or [] if row >= 0})
+        where = f"{frag} row {rows[0] + 1}" if rows else frag
+        cols = r.get("columns") or []
+        sev = WARN
+        msg = f"{name}: {r['message']}"
+        t = data.tables.get(table)
+        if name == "InvalidReference" and cols and rows and t:
+            col = cols[0]
+            value = next((x[col] for x in t.all_rows if x.fragment == frag and x.index == rows[0]), "?")
+            ref = t.col(col)["is_reference"] if t.col(col) else None
+            target = f"{ref[0]}.{ref[1]}" if ref else "?"
+            msg = f"{col}={value!r} not found in {target}"
+            sev = ERROR
+            if ref and f"{ref[0]}_tables" not in game_tables:
+                sev = INFO
+                msg += " (Assembly Kit-only table, not read by the game)"
+        elif cols:
+            msg += f" [{', '.join(cols)}]"
+        out.append(Finding(sev, f"rpfm-{r['checked']}", table, where, msg))
     return out
 
 
@@ -116,16 +112,20 @@ def main(argv=None):
 def run(pack, a):
     findings = []
     with Rpfm(a.rpfm) as rpfm:
-        rpfm.call({"SetGameSelected": [GAME, False]})
-        rpfm.call({"OpenPackFiles": [pack]})
-        missing = [name for ok, name in rpfm.call({"GetDependencyPackFilesList": pack})["VecBoolString"] if not ok]
-        for name in missing:
-            findings.append(Finding(ERROR, "pack-dependency", "-", "-", f"dependency {name} is not installed"))
-        data = PackData(rpfm, pack).load()
+        rpfm.job("session.set_game", {"game": GAME, "rebuild_dependencies": False})
+        opened = rpfm.call("pack.open", {"paths": [pack]})
+        key = opened["key"]
+        data = PackData(rpfm, opened).load()
         for path, err in data.decode_errors:
             findings.append(Finding(ERROR, "decode", path.split("/")[1] if "/" in path else path, path, err))
-        campaigns = a.campaign or sorted(rpfm.call({"BuildStarposGetCampaingIds": pack})["HashSetString"])
-        deps = rpfm.call({"RebuildDependencies": False})["DependenciesInfo"]
+        campaigns = a.campaign or rpfm.call("startpos.campaigns", {"pack": key})["campaigns"]
+        rpfm.job("dependencies.rebuild")
+        deps = rpfm.call("dependencies.info")
+        # A dependency is missing when RPFM loaded no files from it.
+        loaded = {f["container_name"] for f in deps.get("parent_packed_files", [])}
+        for dep in rpfm.call("pack.info", {"pack": key})["dependencies"]:
+            if dep["name"] not in loaded:
+                findings.append(Finding(ERROR, "pack-dependency", "-", "-", f"dependency {dep['name']} is not installed"))
         if not deps.get("vanilla_packed_files"):
             raise RpfmError("RPFM loaded no Warhammer III game files, so there is nothing to check against. "
                             "In rpfm_ui.exe, select Game Selected > Warhammer 3, then Game Selected > "
@@ -136,9 +136,9 @@ def run(pack, a):
                                     "Assembly Kit has can't be checked (set the Assembly Kit Folder in RPFM's "
                                     "settings and regenerate the cache)"))
         if not a.no_rpfm_diagnostics:
-            findings += rpfm_diagnostics(rpfm, pack, data, deps)
-        db = GameDB(rpfm, pack, data.files, deps)
-        maps = {} if a.no_map else load_maps(rpfm, pack, data, db, deps, campaigns)
+            findings += rpfm_diagnostics(rpfm, key, data, deps)
+        db = GameDB(rpfm, opened, data.files, deps)
+        maps = {} if a.no_map else load_maps(rpfm, key, data, db, deps, campaigns)
         if not campaigns:
             findings.append(Finding(ERROR, "campaign", "-", "-", "no buildable campaign found in the pack"))
         findings += GameChecker(data, campaigns, db, maps).run()

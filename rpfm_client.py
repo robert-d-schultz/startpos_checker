@@ -1,4 +1,5 @@
-"""Minimal client for the RPFM 5 server (JSON over WebSocket).
+"""Minimal client for the RPFM server's v2 API (JSON-RPC 2.0 over WebSocket),
+RPFM 5.3 or later.
 
 Starts rpfm_server.exe if nothing is listening. The server exits once its
 last session disconnects, so keep one Rpfm instance open for a whole run.
@@ -42,22 +43,43 @@ class Rpfm:
             raise RpfmError(f"could not connect to {url}")
         self._ids = itertools.count(1)
 
-    def call(self, data):
+    def call(self, method, params=None):
         i = next(self._ids)
-        self.ws.send(json.dumps({"id": i, "data": data}))
+        self.ws.send(json.dumps({"jsonrpc": "2.0", "id": i, "method": method, "params": params or {}}))
         while True:
             msg = json.loads(self.ws.recv())
-            if msg.get("id") == i:
-                out = msg["data"]
-                if isinstance(out, dict) and "Error" in out:
-                    raise RpfmError(f"{_name(data)}: {out['Error']}")
-                return out
+            if msg.get("id") == i:   # anything else is a notification
+                if "error" in msg:
+                    raise RpfmError(f"{method}: {msg['error']['message']}")
+                return msg["result"]
+
+    def job(self, method, params=None):
+        """Call a method that runs as a job, and wait for its result."""
+        job = self.call(method, params)["job"]
+        while True:
+            status = self.call("job.wait", {"job": job, "timeout_secs": 600})
+            if status["state"] == "finished":
+                return status["result"]
+            if status["state"] == "failed":
+                raise RpfmError(f"{method}: {status['error']['message']}")
+            if status["state"] == "cancelled":
+                raise RpfmError(f"{method}: cancelled")
+
+    def pages(self, method, params, items):
+        """Every item of a paginated method, `items` being the result's list field."""
+        offset = 0
+        while True:
+            res = self.call(method, {**params, "offset": offset, "limit": 10000})
+            yield from res[items]
+            offset += len(res[items])
+            if not res[items] or offset >= res["total"]:
+                return
 
     def close(self):
         if self.ws is None:
             return
         try:
-            self.ws.send(json.dumps({"id": 0, "data": "ClientDisconnecting"}))
+            self.call("session.disconnect")
         finally:
             self.ws.close()
             self.ws = None
@@ -69,10 +91,7 @@ class Rpfm:
         self.close()
 
 
-def _name(data):
-    return data if isinstance(data, str) else next(iter(data))
-
-
-def cell(value):
-    """Unwrap a tagged DecodedData cell ({"I64": 5} -> 5)."""
-    return next(iter(value.values())) if isinstance(value, dict) else value
+def source(name, pack_key):
+    """A FileSource: "pack" is the open pack, the rest are the dependencies
+    ("game_files", "parent_files", "assembly_kit")."""
+    return {"pack": pack_key} if name == "pack" else name
