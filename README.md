@@ -261,7 +261,7 @@ Checks only 3K has:
 | check | severity | what |
 |---|---|---|
 | `diplomacy-deal` | error / info | a `start_pos_diplomacy_deals` row with no `start_pos_diplomacy_simple_deals` (or `_complex_deals`) row of the same id, or a simple deal with no deals row. **The AK's `start_pos_diplomacy_deals` has 35 deals (CA's hidden treaties) with no simple deal; copied into a pack, they make the start_pos build fail.** Copy only the deals your simple deals use. Info: how many such deals there are |
-| `dangling-id` | error / warning | deal orderings and simple-deal parameters naming a deal that doesn't exist; proposers, recipients and faction parameters naming no start_pos faction. Warning: a technology whose faction doesn't exist, or a religion or pooled resource whose region doesn't exist (CA's AK has these left over from deleted factions and regions) |
+| `dangling-id` | error / warning | deal orderings and simple-deal parameters naming a deal that doesn't exist; proposers, recipients and faction parameters naming no start_pos faction. Warning: a technology whose faction doesn't exist, or a religion or pooled resource whose region doesn't exist. The start_pos still builds with these leftovers |
 | `campaign-mismatch` | error | a deal, deal parameter, force, family / relationship link, employment history entry, technology or world power token joining rows of different campaigns |
 | `diplomacy` | info | a deal proposed to the proposer itself (CA's automatic treaties do this) |
 | `force` | error / warning | in `start_pos_non_commanding_generals`: a commander that isn't an on-map general, a non-commanding general that isn't a general, serves another faction or commands a force itself, or more than 2 per force; captains / captain retinue modifiers on a non-general. Warning: captain retinue modifiers on a general with no captains |
@@ -300,8 +300,7 @@ AK tables resolves.
   `dangling-id` (a settlement left over from a deleted region), and
   `campaign-scope` for the other campaigns' rows.
 - **Three Kingdoms** (all five vanilla campaigns): the only errors left are
-  the 35 orphan `diplomacy-deal` rows, which really do break the build, and 9
-  AK characters whose faction no longer exists.
+  the 35 orphan `diplomacy-deal` rows, which really do break the build.
 
 Rules that CA's data breaks and that were therefore dropped: name gender vs
 `is_male` (35 mismatches in CA's WH3 data), surname type, "more secondary

@@ -28,9 +28,9 @@ class Checker:
     # What differs between games in the start_pos tables these checks read.
     TYPE = "Type"                    # start_pos_characters agent type column
     MAX_ARMY_UNITS = MAX_ARMY_UNITS
-    # start_pos_settlements.region that resolves to nothing. CA's data has these and still
-    # builds: WH3's AK has 1 settlement left over from a deleted region, 3K's AK 1022 (and
-    # their religion / pooled resource rows).
+    # start_pos_settlements.region that resolves to nothing. The start_pos still builds: WH3's
+    # AK has 1 settlement left over from a deleted region. (3K's clean AK has none, but a 3K
+    # start_pos with 1022 of these, and their religion / pooled resource rows, built.)
     SETTLEMENT_REGION_SEV = WARN
     UNOWNED_CAPITAL_SEV = ERROR      # faction_capital region without an owner
     # Character placed in a settlement its faction doesn't own. CA's WH3 combi has one

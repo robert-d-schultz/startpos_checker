@@ -252,7 +252,7 @@ class ThreeKingdomsChecker(GameChecker):
         overridden = self._overridden(self.factions, "ID", self.faction_by_id)
         for name, col in (("start_pos_technologies", "faction"),
                           ("start_pos_world_power_tokens", "start_pos_faction")):
-            # CA's AK start_pos has 90 technologies left over from factions it deleted, and still builds.
+            # A 3K start_pos with 90 technologies of deleted factions still built (CA's AK has none).
             for r in self.d.table(name).rows:
                 fs = {col: self.resolve(name, r, col, self.faction_by_id, "start_pos_factions", overridden,
                                         WARN if name == "start_pos_technologies" else ERROR)}
